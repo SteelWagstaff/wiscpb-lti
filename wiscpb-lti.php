@@ -1,15 +1,15 @@
 <?php
 /**
  * @wordpress-plugin
- * Plugin Name:       Wisc Pressbooks LTI
- * Description:       LTI Integration for Pressbooks at UW-Madison. Based on the Candela LTI integration from Lumen Learning, but looks for a specified custom LTI parameter to use for the WordPress login id (instead of using the generated LTI user id)
- * Version:           0.1
- * Author:            UW-Madison Learning Solutions 
- * Author URI:        
+ * Plugin Name:       Wisc Content Auth LTI
+ * Description:       LTI Integration for Pressbooks and Grassblade at UW-Madison. Based on the Candela LTI integration from Lumen Learning, but looks for a specified custom LTI parameter to use for the WordPress login id (instead of using the generated LTI user id)
+ * Version:           0.2.7
+ * Author:            UW-Madison Learning Solutions
+ * Author URI:
  * Text Domain:       lti
  * License:           MIT
  * Network: True
- * GitHub Plugin URI: 
+ * GitHub Plugin URI:
  */
 
 //namespace WiscLTI;
@@ -27,12 +27,15 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 WISCPB_LTI::init();
 
 class WISCPB_LTI {
+
+  const DEBUG_LOG = TRUE;
+
   /**
    * Takes care of registering our hooks and setting constants.
    */
   public static function init() {
     if (isset($_GET['content_only'])) {
-       wp_enqueue_style('wisc-lti-nav', plugins_url('no-navigation.css', __FILE__));
+      add_action( 'init', array( __CLASS__, 'init_no_navigation' ) );
     }
 
     // Table name is always root (site)
@@ -60,7 +63,11 @@ class WISCPB_LTI {
     add_action( 'parse_request', array( __CLASS__, 'parse_request' ) );
     add_action('add_meta_boxes', array(__CLASS__,'addLTILink'));
 
-    // Respond to LTI launches
+      add_action('admin_menu', array(__CLASS__, 'setup_lti_admin_menus'));
+
+
+
+      // Respond to LTI launches
     add_action( 'lti_setup', array( __CLASS__, 'lti_setup' ) );
     add_action( 'lti_launch', array( __CLASS__, 'lti_launch') );
 
@@ -68,27 +75,75 @@ class WISCPB_LTI {
 
 //    add_action('admin_menu', array( __CLASS__, 'admin_menu'));
 
+    add_action('post_submitbox_misc_actions', array(__CLASS__, 'createPostRestrictField'));
+    add_action('save_post', array(__CLASS__, 'savePostRestrictField'));
+    add_action('wp', array(__CLASS__, 'restrict_access'));
+
     define('WISCPB_LTI_TEACHERS_ONLY', 'wiscpb_lti_teachers_only');
     add_option( WISCPB_LTI_TEACHERS_ONLY, false );
 	}
 
-	function addLTILink($post){
+  function setup_lti_admin_menus() {
+        add_options_page('LTI Restrictions', 'LTI Restriction Settings', 'manage_options',
+            'lti_settings', array(__CLASS__,'lti_settings'));
+  }
+
+  function lti_settings() {
+        if (!current_user_can('manage_options')) {
+            wp_die('You do not have sufficient permissions to access this page.');
+        }
+
+        echo "<h1>LTI Restriction Settings</h1>";
+
+        if (isset($_POST['submit']) && $_SERVER["REQUEST_METHOD"] == "POST") {
+            if(!empty($_POST['restrict-lti'])) {
+                $restrict_lti = esc_attr($_POST['restrict-lti']);
+                update_option("restrict-lti", $restrict_lti);
+            } else {
+                update_option("restrict-lti", "0");
+            }
+
+            echo "<div><h2 class='creport-info-message'>Settings saved</h2></div>";
+        }
+
+        $restrict_lti = get_option('restrict-lti');
+
+
+        ?>
+
+        <form method="POST" action="">
+            <p style="width:200px;"><?php _e("Restrict page views to only LTI launches", 'lti_settings'); ?>
+                <input type="checkbox" id="restrict-lti" name="restrict-lti" value="1"<?php checked( '1' , $restrict_lti) ?>"/>
+            </p>
+            <br /><br />
+            <input name="submit" type="submit" id="submit" value="Save" class="button-primary" />
+        </form>
+
+        <?php
+
+    }
+
+  public static function init_no_navigation() {
+    wp_enqueue_style('wisc-lti-nav', plugins_url('no-navigation.css', __FILE__));
+  }
+
+  public static function addLTILink($post){
         add_meta_box( 'lti_meta_box', __( 'LTI Information', 'lti_meta' ), array(__CLASS__, 'build_lti_link'), 'post', 'normal', 'low');
         add_meta_box( 'lti_meta_box', __( 'LTI Information', 'lti_meta' ), array(__CLASS__, 'build_lti_link'), 'page', 'normal', 'low');
 
 
     }
 
-    function build_lti_link(){
+  public static function build_lti_link(){
         global $wpdb;
         $current_blog = get_current_blog_id();
 
         switch_to_blog(1);
         $table_name = $wpdb->base_prefix . "postmeta";
-        $sql = $wpdb->prepare("SELECT * FROM ". $table_name ." WHERE meta_key = %s", _lti_consumer_key);
+        $sql = "SELECT * FROM ". $table_name ." WHERE meta_key = '_lti_consumer_key'";
         $consumer_key = $wpdb->get_row($sql);
 
-        $sql = $wpdb->prepare("SELECT * FROM ".$table_name." WHERE meta_key = %s", _lti_consumer_secret);
+        $sql = "SELECT * FROM ".$table_name." WHERE meta_key = '_lti_consumer_secret'";
         $consumer_secret = $wpdb->get_row($sql);
 
         switch_to_blog($current_blog);
@@ -115,46 +170,85 @@ class WISCPB_LTI {
     WISCPB_LTI::create_db_table();
   }
 
-  // Comment out the code that adds the deprecated "LTI Maps" functionality to the admin nav.
-  // TODO: Clean out this Mapping functionality from this entire plugin; it is vestigial and should be removed.
-
-  // public static function admin_menu() {
-  //   add_menu_page(
-  //     __('LTI maps', 'candela_lti'),
-  //     __('LTI maps', 'candela_lti'),
-  //     CANDELA_LTI_CAP_LINK_LTI,
-  //     'lti-maps',
-  //     array(__CLASS__, 'lti_maps_page_handler')
-  //   );
-  // }
-
-  // public static function lti_maps_page_handler() {
-  //   global $wpdb;
-
-  //   include_once(__DIR__ . '/candela-lti-table.php');
-  //   $table = new Candela_LTI_Table;
-  //   $table->prepare_items();
-
-  //   $message = '';
-
-  //   if ( 'delete' === $table->current_action() ) {
-  //     $message = '<div class="updated below-h2" id="message"><p>' . sprintf(__('Maps deleted: %d', 'candela_lti'), count($_REQUEST['ID'])) . '</p></div>';
-  //   }
-
-  //   print '<div class="wrap">';
-  //   print $message;
-  //   print '<form id="candela-lti-maps" method="GET">';
-  //   print '<input type="hidden" name="page" value="' . $_REQUEST['page'] . '" />';
-  //   $table->display();
-  //   print '</form>';
-  //   print '</div>';
-  // }
-
   /**
    * Do any necessary cleanup.
    */
   public static function deactivate() {
     WISCPB_LTI::remove_db_table();
+  }
+
+  public static function createPostRestrictField(){
+      $post_id = get_the_ID();
+
+      if (!(get_post_type($post_id) == 'post' || get_post_type($post_id) == 'page' ||
+          get_post_type($post_id) == 'chapter')) {
+          return;
+      }
+
+      $value = get_post_meta($post_id, 'post_restrict_lti', true);
+      wp_nonce_field('restrict_nonce'.$post_id, 'restrict_nonce');
+
+      $buttonText = 'Restrict content to LTI Launches';
+
+      $restrict_lti = get_option('restrict-lti');
+      if ($restrict_lti == 1){
+          $buttonText = 'Restricted at the site level';
+          $value = true;
+      }
+
+      ?>
+      <div class="misc-pub-section misc-pub-section-first">
+          <label><input type="checkbox" value="1" <?php checked($value, true, true); disabled($restrict_lti == 1, true, true); ?> name="post_restrict_lti" /><?php _e($buttonText); ?></label>
+      </div>
+      <?php
+  }
+
+  public static function savePostRestrictField($post_id){
+      if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+          return;
+      }
+
+      if (
+          !isset($_POST['restrict_nonce']) ||
+          !wp_verify_nonce($_POST['restrict_nonce'], 'restrict_nonce'.$post_id)
+      ) {
+          return;
+      }
+
+      if (!current_user_can('edit_post', $post_id)) {
+          return;
+      }
+
+      $restrict_lti = get_option('restrict-lti');
+      if ($restrict_lti == 1){
+          return;
+      }
+
+      if (isset($_POST['post_restrict_lti'])) {
+          update_post_meta($post_id, 'post_restrict_lti', $_POST['post_restrict_lti']);
+      } else {
+          delete_post_meta($post_id, 'post_restrict_lti');
+      }
+  }
+
+  public static function restrict_access(){
+
+      $post_id = get_the_ID();
+      $value = get_post_meta($post_id, 'post_restrict_lti', true);
+
+      $restrict_lti = get_option('restrict-lti');
+      $should_restrict = $value || $restrict_lti == 1;
+
+      if (current_user_can('edit_posts') || isset($_REQUEST['lti_context_id']) || !$should_restrict){
+          return;
+      } else {
+          // Not through LTI or an editing user, redirect to 403
+          global $wp_query;
+          $wp_query->set_403();
+          status_header( 403 );
+          get_template_part( 403 ); exit();
+      }
+
   }
 
   /**
@@ -167,7 +261,6 @@ class WISCPB_LTI {
       WISCPB_LTI::save_outcome_info($_POST['lis_outcome_service_url'],
           $wp->query_vars['page_id'],
           $current_user->ID, $wp->query_vars['blog'], $_POST["lis_result_sourcedid"]);
-
 //      WISCPB_LTI::sendGrade(.5, $current_user->ID, $wp->query_vars['page_id'], $wp->query_vars['blog']);
     // allows deep links with an LTI launch urls like:
     // <wiscpb>/api/lti/BLOGID?page_title=page_name
@@ -241,8 +334,7 @@ class WISCPB_LTI {
   }
 
   /**
-   * Take care of authenticating the incoming user and creating an account if
-   * required.
+   * Take care of authenticating the incoming user and creating an account if required.
    */
   public static function lti_accounts() {
       global $wp;
@@ -255,6 +347,11 @@ class WISCPB_LTI {
     // if we do not have an external user_id skip account stuff.
     if ( empty($_POST[WISC_LTI_LOGIN_ID_POST_PARAM]) ) {
       return;
+    }
+
+    // We also require that this external id be an email address so that it can be used to create/identify a user.
+    if ( ! is_email( $_POST[WISC_LTI_LOGIN_ID_POST_PARAM] ) ) {
+      wp_die( 'Canvas ID provided to LTI tool ("' . $_POST[WISC_LTI_LOGIN_ID_POST_PARAM] . '") is not a valid email address.' );
     }
 
     // Find user account (if any) with matching ID
@@ -286,7 +383,7 @@ class WISCPB_LTI {
       }
     }
 
-    
+
 
     // If the user is not currently logged in... authenticate as the matched account.
     if ( ! is_user_logged_in() || $logged_out ) {
@@ -346,8 +443,12 @@ class WISCPB_LTI {
     else {
         $password = wp_generate_password( WISCPB_LTI_PASSWORD_LENGTH, true);
 
-      //E. Scull: TODO, add user's name and other details here too. 
+      //E. Scull: TODO, add user's name and other details here too.
       $user_id = wp_create_user( $username, $password, $username );
+      if ( is_wp_error( $user_id ) ) {
+        wp_die( 'Failed to create new Pressbooks user with a username and email of "' . $username . '".  Does an account already exist for that email address?' );
+      }
+      
       $user = new WP_User( $user_id );
       $user->set_role( 'subscriber' );
 //        echo $username.'<br>';
@@ -360,7 +461,7 @@ class WISCPB_LTI {
   }
 
   public static function record_new_register($user, $blog){
-    //E. Scull: Comment out role-related filtering; we want names and default email for everyone (including students) 
+    //E. Scull: Comment out role-related filtering; we want names and default email for everyone (including students)
 
     $roles = '';
     if (isset($_POST['ext_roles'])) {
@@ -399,8 +500,6 @@ class WISCPB_LTI {
     update_user_option( $user->ID, WISCPB_LTI_USERMETA_ENROLLMENT, $data );
     switch_to_blog($curr);
   }
-
-
 
   // Should use email from LTI instead?
   public static function default_lti_email( $username ) {
@@ -475,11 +574,13 @@ class WISCPB_LTI {
     endif;
   }
 
-
   //E. Scull - Add function to find user by login name (username) instead of external_id meta field
   public static function find_user_by_login( $login ) {
     switch_to_blog(1);
     $user = get_user_by( 'login', $login );
+    if ( empty ( $user ) ) {
+      $user = get_user_by( 'email', $login );
+    }
     restore_current_blog();
 
     return $user;
@@ -518,7 +619,6 @@ class WISCPB_LTI {
 
     return $query_vars;
   }
-
 
   /**
    * Update the database
@@ -850,10 +950,10 @@ class WISCPB_LTI {
           self::getPOXGradeRequest());
 
       $table_name = $wpdb->base_prefix . "postmeta";
-      $sql = $wpdb->prepare("SELECT * FROM ". $table_name ." WHERE meta_key = %s", _lti_consumer_key);
+      $sql = $wpdb->prepare("SELECT * FROM $table_name WHERE meta_key = %s", '_lti_consumer_key');
       $consumer_key = $wpdb->get_row($sql);
 
-      $sql = $wpdb->prepare("SELECT * FROM ".$table_name." WHERE meta_key = %s", _lti_consumer_secret);
+      $sql = $wpdb->prepare("SELECT * FROM $table_name WHERE meta_key = %s", '_lti_consumer_secret');
       $consumer_secret = $wpdb->get_row($sql);
 
 
@@ -862,7 +962,7 @@ class WISCPB_LTI {
 
   }
 
-    public static function getPOXGradeRequest() {
+  public static function getPOXGradeRequest() {
         return '<?xml version = "1.0" encoding = "UTF-8"?>
     <imsx_POXEnvelopeRequest xmlns = "http://www.imsglobal.org/services/ltiv1p1/xsd/imsoms_v1p0">
       <imsx_POXHeader>
@@ -889,15 +989,15 @@ class WISCPB_LTI {
     </imsx_POXEnvelopeRequest>';
     }
 
-
-    public static function sendOAuthBody($method, $endpoint, $oauth_consumer_key, $oauth_consumer_secret,
+  public static function sendOAuthBody($method, $endpoint, $oauth_consumer_key, $oauth_consumer_secret,
                                          $content_type, $body, $more_headers=false, $signature=false)
     {
-        $files = glob( ABSPATH . 'wp-content/plugins/wiscpb-lti/OAuth/*.php');
+        $files = glob( __DIR__ . '/OAuth/*.php' );
+
         foreach ($files as $file) {
             require_once($file);
         }
-        require_once (ABSPATH . '/wp-content/plugins/wiscpb-lti/Net.php');
+        require_once( __DIR__ . '/../wiscpb-lti/Net.php' );
 
         $hmac_method = new OAuthSignatureMethod_HMAC_SHA1();
         $hash = base64_encode(sha1($body, TRUE));
@@ -918,5 +1018,15 @@ class WISCPB_LTI {
         }
         return Net::doBody($endpoint, $method, $body,$header);
     }
+
+  public static function write_log( $log ) {
+    if ( true === WP_DEBUG && true === WISCPB_LTI::DEBUG_LOG ) {
+      if ( is_array( $log ) || is_object( $log ) ) {
+        error_log( print_r( $log, true ) );
+      } else {
+        error_log( $log );
+      }
+    }
+  }
 
 }
